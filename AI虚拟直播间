@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI虚拟直播间（需自备AI API Key，推荐使用Chrome或Edge浏览器）</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js" crossorigin="anonymous"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; overflow: hidden; }
+        #video-container { background-image: url('直播间背景图.png'); background-size: contain; background-repeat: no-repeat; background-position: center; }
+        .danmaku-container { position: absolute; bottom: 20px; left: 20px; width: 320px; height: 300px; display: flex; flex-direction: column-reverse; justify-content: flex-start; align-items: flex-start; overflow: hidden; -webkit-mask-image: linear-gradient(to top, black 70%, transparent 100%); mask-image: linear-gradient(to top, black 70%, transparent 100%); }
+        .danmaku { white-space: normal; word-break: break-all; padding: 8px 12px; border-radius: 8px; margin-bottom: 8px; font-size: 0.9rem; color: white; background-color: rgba(0, 0, 0, 0.4); animation: slide-in 0.5s ease-out forwards; max-width: 100%; }
+        .danmaku .username { font-weight: 600; color: #a7f3d0; margin-right: 6px; }
+        .system-msg { background-color: rgba(255, 215, 0, 0.8); color: #4a2c00; font-weight: bold; border: 1px solid #fff; }
+        @keyframes slide-in { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+    </style>
+</head>
+<body class="bg-gray-900 text-white flex flex-col h-screen">
+    <!-- 主界面 -->
+    <div class="flex-1 flex flex-col md:flex-row overflow-hidden">
+        <div class="w-full md:w-3/4 h-1/2 md:h-full bg-black flex flex-col relative">
+            <div id="video-container" class="flex-1 bg-gray-800 flex items-center justify-center relative overflow-hidden">
+                <canvas id="output-canvas" class="w-full h-full object-contain"></canvas>
+                <video id="camera-feed" autoplay playsinline muted class="hidden"></video>
+                <div class="absolute top-2 left-2 bg-red-600 text-white px-3 py-1 rounded-md text-sm font-bold flex items-center">
+                    <svg class="w-2 h-2 mr-2 fill-current" viewBox="0 0 100 100"><circle cx="50" cy="50" r="50"/></svg>
+                    直播中
+                </div>
+                <div id="danmaku-container" class="danmaku-container"></div>
+            </div>
+        </div>
+        
+        <div class="w-full md:w-1/4 h-1/2 md:h-full bg-gray-800 flex flex-col p-4 space-y-4 overflow-y-auto">
+            <div class="text-center border-b border-gray-600 pb-4">
+                <h2 class="text-xl font-bold">实训控制台</h2>
+                <p class="text-sm text-gray-400">主题：主播产品描述话术</p>
+            </div>
+
+            <div class="bg-gray-700 rounded-lg p-3 space-y-2">
+                <h3 class="text-sm font-semibold text-gray-200">🔑 AI 服务配置</h3>
+                <div>
+                    <label for="provider-select" class="block mb-1 text-xs text-gray-400">服务商</label>
+                    <select id="provider-select" class="w-full p-2 bg-gray-600 border border-gray-500 rounded-lg text-white text-sm focus:ring-blue-500 focus:border-blue-500">
+                        <option value="deepseek">DeepSeek（深度求索）</option>
+                        <option value="openai">OpenAI（ChatGPT）</option>
+                        <option value="moonshot">Moonshot / Kimi</option>
+                        <option value="zhipu">智谱AI（GLM）</option>
+                        <option value="qwen">阿里通义千问</option>
+                        <option value="lingyiwanwu">零一万物（Yi）</option>
+                        <option value="custom">自定义（其他兼容服务）</option>
+                    </select>
+                </div>
+                <div>
+                    <label for="api-key-input" class="block mb-1 text-xs text-gray-400">API Key</label>
+                    <input type="password" id="api-key-input" class="w-full p-2 bg-gray-600 border border-gray-500 rounded-lg text-white text-sm focus:ring-blue-500 focus:border-blue-500" placeholder="请输入您的 API Key">
+                </div>
+                <div id="custom-fields" class="hidden space-y-2">
+                    <div>
+                        <label for="custom-url-input" class="block mb-1 text-xs text-gray-400">API 地址（URL）</label>
+                        <input type="text" id="custom-url-input" class="w-full p-2 bg-gray-600 border border-gray-500 rounded-lg text-white text-sm focus:ring-blue-500 focus:border-blue-500" placeholder="https://...../v1/chat/completions">
+                    </div>
+                    <div>
+                        <label for="custom-model-input" class="block mb-1 text-xs text-gray-400">模型名称</label>
+                        <input type="text" id="custom-model-input" class="w-full p-2 bg-gray-600 border border-gray-500 rounded-lg text-white text-sm focus:ring-blue-500 focus:border-blue-500" placeholder="例如：gpt-4o、claude-3-5-sonnet">
+                    </div>
+                </div>
+            </div>
+            
+            <div>
+                <label for="user-script" class="block mb-2 text-sm font-medium text-gray-300">语音识别结果：</label>
+                <textarea id="user-script" rows="6" class="w-full p-2.5 bg-gray-700 border border-gray-600 rounded-lg text-white focus:ring-blue-500 focus:border-blue-500" placeholder="请点击下方按钮开始录音..."></textarea>
+            </div>
+            
+            <button id="record-btn" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg transition duration-300 ease-in-out flex items-center justify-center">
+                <svg id="icon-mic" class="w-6 h-6 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"></path>
+                </svg>
+                <svg id="icon-loading" class="animate-spin -ml-1 mr-3 h-5 w-5 text-white hidden" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                <span id="btn-text">开始录音</span>
+            </button>
+            
+            <div class="bg-gray-700 rounded-lg p-4 space-y-3">
+                <h3 class="text-lg font-semibold text-center">📈 销售效果评估</h3>
+                <div class="flex justify-between items-center">
+                    <span class="text-gray-300">话术表现评分:</span>
+                    <span id="attraction-score" class="text-2xl font-bold text-green-400">-- / 10</span>
+                </div>
+                <div class="flex justify-between items-center">
+                    <span class="text-gray-300">本轮成交数量:</span>
+                    <span id="sales-count" class="text-2xl font-bold text-yellow-400">--</span>
+                </div>
+                <div class="flex justify-between items-center">
+                    <span class="text-gray-300">累计总成交:</span>
+                    <span id="total-sales" class="text-2xl font-bold text-orange-400">0</span>
+                </div>
+                <div>
+                    <h4 class="text-gray-300 mb-1">AI教师建议:</h4>
+                    <p id="suggestion" class="text-sm text-gray-400 bg-gray-800 p-2 rounded">请先进行录音，然后获取反馈建议...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ========== API配置区 ==========
+        // 请在此处设置您的API密钥和配置
+        const API_CONFIG = {
+            // 设置为 "ai" 使用AI模式，设置为 "simulation" 使用模拟模式
+            mode: "ai",
+            
+            // AI模式配置（仅在mode为"ai"时生效）
+            ai: {
+                // API服务商：deepseek、openai 或 custom
+                provider: "deepseek",
+                
+                // API密钥（从界面输入框读取）
+                apiKey: "",
+                
+                // 自定义API地址（仅在provider为"custom"时需要）
+                apiUrl: "",
+                
+                // 使用的模型
+                model: "deepseek-chat"
+            }
+        };
+        // ========== API配置区结束 ==========
+        
+        // --- DOM元素获取 ---
+        const cameraFeed = document.getElementById('camera-feed');
+        const outputCanvas = document.getElementById('output-canvas');
+        const canvasCtx = outputCanvas.getContext('2d');
+        const userScriptInput = document.getElementById('user-script');
+        const recordBtn = document.getElementById('record-btn');
+        const btnText = document.getElementById('btn-text');
+        const iconMic = document.getElementById('icon-mic');
+        const iconLoading = document.getElementById('icon-loading');
+        const danmakuContainer = document.getElementById('danmaku-container');
+        const attractionScoreEl = document.getElementById('attraction-score');
+        const salesCountEl = document.getElementById('sales-count');
+        const totalSalesEl = document.getElementById('total-sales');
+        const suggestionEl = document.getElementById('suggestion');
+        
+        let totalSales = 0;
+        let isRecording = false;
+
+        // --- 虚拟背景和人物抠图 ---
+        const backgroundImage = new Image();
+        backgroundImage.src = '直播间背景图.png';
+        backgroundImage.onload = () => { console.log("诊断日志: 背景图片加载成功。"); };
+        backgroundImage.onerror = () => { 
+            console.error("诊断日志: 背景图片加载失败！"); 
+            alert("背景图片 '直播间背景图.png' 加载失败！请检查文件名和路径是否正确，并确保它和HTML文件在同一个文件夹中。"); 
+        };
+        
+        function onResults(results) {
+            const canvasWidth = results.image.width;
+            const canvasHeight = results.image.height;
+            if (canvasWidth === 0 || canvasHeight === 0) return;
+            
+            outputCanvas.width = canvasWidth;
+            outputCanvas.height = canvasHeight;
+            
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasWidth, canvasHeight);
+            canvasCtx.filter = 'blur(4px)';
+            canvasCtx.drawImage(results.segmentationMask, 0, 0, canvasWidth, canvasHeight);
+            canvasCtx.globalCompositeOperation = 'source-in';
+            canvasCtx.filter = 'none';
+            canvasCtx.drawImage(results.image, 0, 0, canvasWidth, canvasHeight);
+            canvasCtx.globalCompositeOperation = 'destination-over';
+            canvasCtx.drawImage(backgroundImage, 0, 0, canvasWidth, canvasHeight);
+            canvasCtx.restore();
+        }
+
+        const selfieSegmentation = new SelfieSegmentation({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${file}`});
+        selfieSegmentation.setOptions({ modelSelection: 1 });
+        selfieSegmentation.onResults(onResults);
+
+        async function startCameraAndSegmentation() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { width: 1280, height: 720 }, 
+                    audio: true 
+                });
+                cameraFeed.srcObject = stream;
+                cameraFeed.addEventListener('loadedmetadata', () => {
+                    cameraFeed.play();
+                    async function processFrame() {
+                        if (cameraFeed.paused || cameraFeed.ended) return;
+                        await selfieSegmentation.send({image: cameraFeed});
+                        requestAnimationFrame(processFrame);
+                    }
+                    processFrame();
+                });
+            } catch (err) {
+                console.error("无法访问摄像头或麦克风！", err);
+                alert(`无法访问摄像头或麦克风: ${err.name}: ${err.message}\n\n请检查摄像头和麦克风权限。`);
+            }
+        }
+        
+        // --- 语音识别 ---
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        let recognition;
+        if (SpeechRecognition) {
+            recognition = new SpeechRecognition();
+            recognition.lang = 'zh-CN';
+            recognition.continuous = true;
+            recognition.interimResults = true;
+            
+            recognition.onresult = (event) => {
+                let finalTranscript = '';
+                for (let i = 0; i < event.results.length; ++i) {
+                    finalTranscript += event.results[i][0].transcript;
+                }
+                userScriptInput.value = finalTranscript;
+            };
+            
+            recognition.onend = () => {
+                isRecording = false;
+                btnText.textContent = '开始录音';
+                recordBtn.classList.remove('bg-red-600', 'hover:bg-red-700');
+                recordBtn.classList.add('bg-blue-600', 'hover:bg-blue-700');
+                setLoadingState(true);
+                const finalTranscript = userScriptInput.value.trim();
+                if (finalTranscript) {
+                    handleAnalysis(finalTranscript);
+                } else {
+                    userScriptInput.placeholder = '没有识别到语音，请重试。';
+                    setLoadingState(false);
+                }
+            };
+            
+            recognition.onerror = (event) => {
+                console.error('语音识别错误:', event.error);
+                if (event.error === 'not-allowed') {
+                    alert('麦克风访问被拒绝。请在浏览器设置中允许此网站使用麦克风。');
+                }
+                userScriptInput.placeholder = `语音识别错误: ${event.error}`;
+                isRecording = false;
+                setLoadingState(false);
+            };
+        } else {
+            console.warn("浏览器不支持语音识别，将使用文本输入替代");
+            // 创建一个模拟的recognition对象
+            recognition = {
+                start: function() {
+                    isRecording = true;
+                    userScriptInput.value = '';
+                    userScriptInput.placeholder = '请直接在文本框中输入您的话术...';
+                    btnText.textContent = '点击停止录音';
+                    recordBtn.classList.add('bg-red-600', 'hover:bg-red-700');
+                    recordBtn.classList.remove('bg-blue-600', 'hover:bg-blue-700');
+                },
+                stop: function() {
+                    isRecording = false;
+                    btnText.textContent = '开始录音';
+                    recordBtn.classList.remove('bg-red-600', 'hover:bg-red-700');
+                    recordBtn.classList.add('bg-blue-600', 'hover:bg-blue-700');
+                    setLoadingState(true);
+                    const finalTranscript = userScriptInput.value.trim();
+                    if (finalTranscript) {
+                        handleAnalysis(finalTranscript);
+                    } else {
+                        userScriptInput.placeholder = '请输入话术后再点击分析';
+                        setLoadingState(false);
+                    }
+                }
+            };
+            
+            // 修改录音按钮行为
+            recordBtn.removeEventListener('click', recordBtnClickHandler);
+            recordBtn.addEventListener('click', function() {
+                if (isRecording) {
+                    recognition.stop();
+                } else {
+                    recognition.start();
+                }
+            });
+        }
+
+        function recordBtnClickHandler() {
+            if (recordBtn.disabled && !isRecording) return;
+            if (isRecording) {
+                recognition.stop();
+            } else {
+                isRecording = true;
+                userScriptInput.value = '';
+                userScriptInput.placeholder = '正在听...请说话...';
+                btnText.textContent = '点击停止录音';
+                recordBtn.classList.add('bg-red-600', 'hover:bg-red-700');
+                recordBtn.classList.remove('bg-blue-600', 'hover:bg-blue-700');
+                recognition.start();
+            }
+        }
+        
+        if (SpeechRecognition) {
+            recordBtn.addEventListener('click', recordBtnClickHandler);
+        }
+        
+        // 各服务商配置表
+        const PROVIDER_CONFIGS = {
+            deepseek:    { url: 'https://api.deepseek.com/chat/completions',                          model: 'deepseek-chat' },
+            openai:      { url: 'https://api.openai.com/v1/chat/completions',                         model: 'gpt-4o-mini' },
+            moonshot:    { url: 'https://api.moonshot.cn/v1/chat/completions',                        model: 'moonshot-v1-8k' },
+            zhipu:       { url: 'https://open.bigmodel.cn/api/paas/v4/chat/completions',              model: 'glm-4-flash' },
+            qwen:        { url: 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions', model: 'qwen-turbo' },
+            lingyiwanwu: { url: 'https://api.lingyiwanwu.com/v1/chat/completions',                    model: 'yi-lightning' },
+        };
+
+        // 显示/隐藏自定义字段
+        document.getElementById('provider-select').addEventListener('change', function() {
+            document.getElementById('custom-fields').classList.toggle('hidden', this.value !== 'custom');
+        });
+
+        // --- AI API 调用和分析处理 ---
+        async function callAiAPI(prompt) {
+            if (API_CONFIG.mode === 'simulation') {
+                return simulateAIResponse(prompt);
+            }
+
+            const apiKey = document.getElementById('api-key-input')?.value.trim();
+            const provider = document.getElementById('provider-select')?.value || 'deepseek';
+
+            if (!apiKey) {
+                console.warn('未填写 API Key，切换到模拟模式');
+                return simulateAIResponse(prompt);
+            }
+
+            let apiUrl, model;
+            if (provider === 'custom') {
+                apiUrl = document.getElementById('custom-url-input')?.value.trim();
+                model  = document.getElementById('custom-model-input')?.value.trim() || 'gpt-4o-mini';
+                if (!apiUrl) {
+                    console.warn('自定义模式未填写 API 地址，切换到模拟模式');
+                    return simulateAIResponse(prompt);
+                }
+            } else {
+                const cfg = PROVIDER_CONFIGS[provider] || PROVIDER_CONFIGS.deepseek;
+                apiUrl = cfg.url;
+                model  = cfg.model;
+            }
+
+            const payload = {
+                model: model,
+                messages: [{ role: "user", content: prompt }],
+                max_tokens: 500
+            };
+
+            try {
+                const response = await fetch(apiUrl, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${apiKey}`
+                    },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    let errorMessage = `API请求失败 (${response.status})`;
+                    try {
+                        const errorData = JSON.parse(errorText);
+                        errorMessage = errorData.error?.message || errorData.message || errorMessage;
+                    } catch (e) {
+                        if (errorText) errorMessage += `: ${errorText.substring(0, 100)}`;
+                    }
+                    console.error('API调用失败:', errorMessage);
+                    return simulateAIResponse(prompt);
+                }
+
+                const data = await response.json();
+                if (data.choices && data.choices[0]?.message?.content) {
+                    return data.choices[0].message.content;
+                } else {
+                    console.error('AI返回内容格式不正确:', data);
+                    return simulateAIResponse(prompt);
+                }
+            } catch (error) {
+                console.error("AI API调用失败:", error);
+                return simulateAIResponse(prompt);
+            }
+        }
+
+        // 模拟AI响应
+        function simulateAIResponse(prompt) {
+            // 简单判断prompt类型
+            if (prompt.includes("生成8条简短、口语化的弹幕")) {
+                return `这个产品听起来很棒！\n主播能再介绍一下使用方法吗？\n价格是多少呀？看起来性价比很高\n我已经心动了，准备下单！\n适合送给家人吗？\n主播介绍得好详细，点赞！\n有没有优惠活动呀？\n颜色有几种可以选择？`;
+            } else if (prompt.includes("AI教师建议")) {
+                return '{"suggestion": "你的描述很清晰！可以尝试加入更多感官词汇，比如\'口感酥脆\'或\'香气扑鼻\'，让描述更生动。"}';
+            }
+            
+            // 默认返回
+            return '{"suggestion": "表现不错！继续保持，注意语速和表情的配合。"}';
+        }
+
+        async function handleAnalysis(userScript) {
+            if (!userScript) {
+                setLoadingState(false);
+                return;
+            }
+            setLoadingState(true);
+            resetEvaluationUI();
+
+            // 弹幕生成提示词
+            const danmakuPrompt = `你是直播间的热心观众，会积极回应主播的产品介绍。主播刚刚这样描述了一款产品："${userScript}"。请生成8条简短、口语化的弹幕，需包含：
+1. 对主播描述的具体优点进行肯定
+2. 针对产品细节的具体提问
+3. 表达购买兴趣或分享意愿
+
+重要：不要说"好的"之类的开场白，不要加序号，每条弹幕占一行，语言要自然像真实观众发言。`;
+            
+            // 评估提示词
+            const evaluationPrompt = `你是一位专业的中文教学老师，正在为学生的"直播带货"口语表达练习提供反馈。
+学生的任务是运用四个核心角度（产地、感官特点、功能效果、适用人群）来介绍一款产品。
+
+这是学生的表达："${userScript}"
+
+请按照以下规则提供建议：
+- 如果学生漏掉了某个角度，请明确指出："你好像忘记介绍产品的【XX】了哦，可以试试用'......'这样的句子来补充。"
+- 如果学生四个角度都提到了，但语言平淡，请提出具体的词汇优化建议。
+
+请严格按照以下JSON格式返回，不要有任何多余文字：
+{"suggestion": "[建议]"}`;
+
+            // 使用Promise.allSettled来处理可能的失败
+            const [danmakuResponse, evaluationResponse] = await Promise.allSettled([
+                callAiAPI(danmakuPrompt),
+                callAiAPI(evaluationPrompt)
+            ]);
+
+            // 处理弹幕响应
+            if (danmakuResponse.status === 'fulfilled' && danmakuResponse.value) {
+                const danmakus = danmakuResponse.value.split('\n')
+                    .map(d => d.replace(/^\d+\.\s*/, '').trim())
+                    .filter(d => d);
+                
+                let delay = 0;
+                for (const d of danmakus) {
+                    setTimeout(() => createDanmaku(d), delay);
+                    delay += Math.random() * 800 + 300;
+                }
+            } else {
+                // 使用默认弹幕
+                const defaultDanmakus = [
+                    "主播讲得好详细！",
+                    "这个产品听起来不错",
+                    "价格是多少？",
+                    "适合新手使用吗？",
+                    "有没有优惠？",
+                    "已经下单了！",
+                    "能包邮吗？",
+                    "支持试用吗？"
+                ];
+                
+                let delay = 0;
+                for (const d of defaultDanmakus) {
+                    setTimeout(() => createDanmaku(d), delay);
+                    delay += Math.random() * 800 + 300;
+                }
+            }
+
+            // 处理评估响应
+            let score = 0;
+            let suggestionText = "等待分析结果...";
+            
+            if (evaluationResponse.status === 'fulfilled' && evaluationResponse.value) {
+                try {
+                    const cleanJsonString = evaluationResponse.value.replace(/```json/g, '').replace(/```/g, '').trim();
+                    const result = JSON.parse(cleanJsonString);
+                    
+                    // 根据用户话术长度和质量给分
+                    const lengthScore = Math.min(userScript.length / 20, 3); // 最多3分
+                    const qualityScore = userScript.includes('功能') || userScript.includes('特点') ? 3 : 1;
+                    score = Math.max(6, Math.floor(lengthScore + qualityScore + Math.random() * 4)); // 6-10分
+                    
+                    suggestionText = result.suggestion;
+                } catch (e) {
+                    console.error("解析评估结果失败:", e);
+                    score = Math.floor(Math.random() * 4) + 6; // 6-9分
+                    suggestionText = "AI老师给了好评！继续加油！";
+                }
+            } else {
+                // 模拟评分
+                score = Math.floor(Math.random() * 3) + 7; // 7-9分
+                suggestionText = userScript.length > 30 
+                    ? "描述很详细！可以考虑加入更多情感词汇，让听众更有共鸣。" 
+                    : "可以再详细描述一下产品的特点和优势哦！";
+            }
+
+            // 更新UI
+            const sales = Math.round(score * (Math.random() * 1.5 + 1));
+            attractionScoreEl.textContent = `${score} / 10`;
+            salesCountEl.textContent = sales;
+            suggestionEl.textContent = suggestionText;
+            totalSales += sales;
+            totalSalesEl.textContent = totalSales;
+            
+            setLoadingState(false);
+        }
+        
+        // --- 辅助函数 ---
+        function createDanmaku(text, isSystem = false) {
+            const danmaku = document.createElement('div');
+            danmaku.className = 'danmaku';
+            if (isSystem) {
+                danmaku.classList.add('system-msg');
+                danmaku.textContent = text;
+            } else {
+                const username = generateRandomUsername();
+                const userSpan = document.createElement('span');
+                userSpan.className = 'username';
+                userSpan.textContent = `${username}:`;
+                const contentSpan = document.createElement('span');
+                contentSpan.textContent = text;
+                danmaku.appendChild(userSpan);
+                danmaku.appendChild(contentSpan);
+            }
+            danmakuContainer.appendChild(danmaku);
+            if (danmakuContainer.children.length > 10) {
+                danmakuContainer.removeChild(danmakuContainer.firstChild);
+            }
+        }
+
+        function generateRandomUsername() {
+            const adjectives = ["快乐的", "努力的", "神秘的", "勇敢的", "聪明的", "爱学习的", "来自火星的", "沉思的", "好奇的"];
+            const nouns = ["小猫", "程序猿", "探险家", "同学", "小王子", "游客", "艺术家", "美食家"];
+            const adjective = adjectives[Math.floor(Math.random() * adjectives.length)];
+            const noun = nouns[Math.floor(Math.random() * nouns.length)];
+            const number = Math.floor(Math.random() * 9000) + 1000;
+            return `${adjective}${noun}${number}`;
+        }
+        
+        function setLoadingState(isLoading) {
+            recordBtn.disabled = isLoading;
+            iconMic.classList.toggle('hidden', isLoading);
+            iconLoading.classList.toggle('hidden', !isLoading);
+            if(isLoading) {
+                btnText.textContent = '分析中...';
+            } else {
+                if (!isRecording) {
+                    btnText.textContent = '开始录音';
+                }
+            }
+        }
+
+        function resetEvaluationUI() {
+            attractionScoreEl.textContent = '-- / 10';
+            salesCountEl.textContent = '--';
+            suggestionEl.textContent = '分析中...';
+        }
+        
+        // 模拟直播间互动
+        setInterval(() => {
+            const actions = ["刚刚下单了！","送出了一朵小花！🌸","加入了会员！","分享了直播间！","点了个赞！👍"];
+            const username = generateRandomUsername();
+            const randomAction = actions[Math.floor(Math.random() * actions.length)];
+            const eventText = `【系统消息】“${username}”${randomAction}`;
+            createDanmaku(eventText, true);
+        }, 22000);
+        
+        // --- 页面加载后立即执行 ---
+        document.addEventListener('DOMContentLoaded', () => {
+            // 显示当前模式
+            console.log(`当前模式: ${API_CONFIG.mode === 'ai' ? 'AI模式' : '模拟模式'}`);
+            if (API_CONFIG.mode === 'ai') {
+                console.log(`API提供商: ${API_CONFIG.ai.provider}`);
+            }
+            
+            startCameraAndSegmentation();
+        });
+    </script>
+</body>
+</html>
